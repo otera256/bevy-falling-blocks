@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::{Duration, Instant}};
 
 use bevy::{color::palettes::{basic::*, css::{DARK_BLUE, LIGHT_BLUE, ORANGE}}, platform::collections::HashMap, prelude::*};
 use rand::seq::IndexedRandom;
@@ -240,6 +240,12 @@ impl BlockTimer {
         self.freeze_timer += self.falling_interval();
     }
 }
+#[derive(Resource, Default)]
+struct LateralMoveTimer {
+    move_count: usize,
+    last_moved: Option<Instant>,
+    is_right: bool
+}
 
 fn main() {
     App::new()
@@ -251,6 +257,7 @@ fn main() {
         .insert_resource(BlockTimer::new())
         .insert_resource(GameScore::new())
         .insert_resource(HoldedMino::default())
+        .insert_resource(LateralMoveTimer::default())
         .init_state::<GameState>()
         .add_systems(Startup, (setup_board_and_resources, setup_score_ui))
         .add_systems(Update, (
@@ -409,16 +416,33 @@ fn move_mino(
     board: Res<Board>,
     mut block_timer: ResMut<BlockTimer>,
     mut game_score: ResMut<GameScore>,
+    mut lateral_move_timer: ResMut<LateralMoveTimer>
 ){
     let mut controlled_flag = false;
+    if keys.any_just_pressed([KeyCode::ArrowRight, KeyCode::KeyD, KeyCode::ArrowLeft, KeyCode::KeyA]) {
+        lateral_move_timer.move_count = 0;
+        lateral_move_timer.last_moved = Some(Instant::now());
+        lateral_move_timer.is_right = keys.any_just_pressed([KeyCode::ArrowRight, KeyCode::KeyD]);
+    }
+    else if !keys.any_pressed([KeyCode::ArrowRight, KeyCode::KeyD, KeyCode::ArrowLeft, KeyCode::KeyA]) {
+        lateral_move_timer.last_moved = None;
+    }
+    let first_interval = Duration::from_millis(150);
+    let next_interval = Duration::from_millis(50);
     // 横移動
-    let lateral_delta = if keys.just_pressed(KeyCode::ArrowRight) || keys.just_pressed(KeyCode::KeyD) {
-        IVec2::new(1, 0)
-    } else if keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::KeyA) {
-        IVec2::new(-1, 0)
-    } else {
-        IVec2::new(0, 0)
+    let lateral_delta = match &mut *lateral_move_timer {
+        LateralMoveTimer {
+            last_moved: Some(last),
+            move_count,
+            is_right
+        } if *move_count == 0 || last.elapsed() > if *move_count == 1 { first_interval } else { next_interval } => {
+            *last = Instant::now();
+            *move_count += 1;
+            IVec2::new(if *is_right { 1 } else { -1 }, 0)
+        }
+        _ => IVec2::new(0, 0)
     };
+
     if lateral_delta != IVec2::new(0, 0) 
         && control_block.iter().all(|(_, block)| board.is_position_valid(block.peek_parrallel_move(lateral_delta))) {
         for (mut transform, mut block) in control_block.iter_mut() {
