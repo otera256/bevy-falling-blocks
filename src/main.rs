@@ -1,8 +1,6 @@
 use std::collections::VecDeque;
 
 use bevy::{color::palettes::{basic::*, css::{DARK_BLUE, LIGHT_BLUE, ORANGE}}, platform::collections::HashMap, prelude::*};
-use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
-use itertools::{Itertools, iproduct};
 use rand::seq::IndexedRandom;
 
 const UNIT: f32 = 35.0;
@@ -106,9 +104,9 @@ impl Mino{
         }
         match rotation {
             Rotation::North => shape,
-            Rotation::East => shape.map(|pos| IVec2::new(-pos.y, pos.x)),
+            Rotation::East => shape.map(|pos| IVec2::new(pos.y, -pos.x)),
             Rotation::South => shape.map(|pos| IVec2::new(-pos.x, -pos.y)),
-            Rotation::West => shape.map(|pos| IVec2::new(pos.y, -pos.x)),
+            Rotation::West => shape.map(|pos| IVec2::new(-pos.y, pos.x)),
         }
     }
 }
@@ -116,8 +114,11 @@ impl Mino{
 #[derive(Resource)]
 struct MinoMaterialMap(HashMap<Mino, Handle<ColorMaterial>>);
 
-#[derive(Resource)]
-struct MinoMesh(Handle<Mesh>);
+#[derive(Resource, Default)]
+struct MinoMesh{
+    default: Handle<Mesh>,
+    preview: Handle<Mesh>,
+}
 
 const NEXT_BLOCKS_CAPACITY: usize = 5;
 
@@ -175,31 +176,29 @@ impl Board {
     }
 }
 
+const MAX_EXTENDED_FREEZE_COUNT: u32 = 10;
+
 #[derive(Resource)]
-struct GameLevel{
+struct BlockTimer{
     level: u32,
-    erased_lines: u32,
     fall_timer: f32,
     block_landed: bool,
     freeze_timer: f32,
+    extended_counter: u32,
 }
 
-impl GameLevel {
+impl BlockTimer {
     fn new() -> Self {
-        GameLevel {
+        BlockTimer {
             level: 1,
-            erased_lines: 0,
             fall_timer: 1.0,
             block_landed: false,
             freeze_timer: 1.0,
+            extended_counter: 0,
         }
     }
     fn falling_interval(&self) -> f32 {
-        3.0 / ((5 + self.level) as f32).sqrt()
-    }
-    fn add_erased_lines(&mut self, lines: u32) {
-        self.erased_lines += lines;
-        self.level = self.erased_lines / 10 + 1;
+        3.0 / (5 + self.level) as f32
     }
     fn should_fall(&mut self, delta: f32) -> bool {
         self.fall_timer -= delta;
@@ -212,7 +211,7 @@ impl GameLevel {
     }
     fn block_has_landed(&mut self) {
         self.block_landed = true;
-        self.freeze_timer = self.falling_interval();
+        self.freeze_timer = self.falling_interval() * 2.0;
     }
     fn hard_drop(&mut self) {
         self.block_landed = true;
@@ -220,6 +219,7 @@ impl GameLevel {
     }
     fn block_reset(&mut self) {
         self.block_landed = false;
+        self.extended_counter = 0;
     }
     fn should_freeze(&mut self, delta: f32) -> bool {
         if !self.block_landed {
@@ -232,25 +232,33 @@ impl GameLevel {
             false
         }
     }
+    fn extend_freeze_time(&mut self) {
+        if self.extended_counter >= MAX_EXTENDED_FREEZE_COUNT {
+            return;
+        }
+        self.extended_counter += 1;
+        self.freeze_timer += self.falling_interval();
+    }
 }
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(EguiPlugin::default())
-        .add_plugins(WorldInspectorPlugin::new())
         .insert_resource(MinoMaterialMap(HashMap::new()))
-        .insert_resource(MinoMesh(Handle::default()))
+        .insert_resource(MinoMesh::default())
         .insert_resource(UpcomingMinoQueue(VecDeque::with_capacity(NEXT_BLOCKS_CAPACITY)))
         .insert_resource(Board([[None; COLUMS]; ROWS + 3]))
-        .insert_resource(GameLevel::new())
+        .insert_resource(BlockTimer::new())
+        .insert_resource(GameScore::new())
+        .insert_resource(HoldedMino::default())
         .init_state::<GameState>()
         .add_systems(Startup, (setup_board_and_resources, setup_score_ui))
-        .add_systems(Update, 
-            (spawn_mino, move_mino, fall_mino, update_score_ui).run_if(in_state(GameState::Playing))
-        )
+        .add_systems(Update, (
+            (spawn_mino, move_mino, fall_mino, update_score_ui, hold_mino).run_if(in_state(GameState::Playing)),
+            updata_preview_minos.run_if(resource_changed::<HoldedMino>.or(resource_changed::<UpcomingMinoQueue>)),
+        ))
         .add_systems(PostUpdate, (
-            (freeze_block, clear_lines).run_if(in_state(GameState::Playing)),
+            (freeze_block, clear_lines).chain().run_if(in_state(GameState::Playing)),
         ))
         .run();
 }
@@ -270,8 +278,27 @@ fn setup_board_and_resources(
         MeshMaterial2d(materials.add(Color::srgb_u8(231, 226, 213))),
         Transform::from_xyz(0.0, 0.0, -1.0),
     ));
+    // rgba(221, 213, 193, 1)
+    let grid_line_material = materials.add(Color::srgb_u8(221, 213, 193));
+    let row_line_mesh = meshes.add(Rectangle::new((COLUMS as f32 + 0.1) * UNIT, 0.1* UNIT));
+    let col_line_mesh = meshes.add(Rectangle::new(0.1 * UNIT, (ROWS as f32 + 0.1) * UNIT));
+    for row in 0..=ROWS {
+        commands.spawn((
+            Mesh2d(row_line_mesh.clone()),
+            MeshMaterial2d(grid_line_material.clone()),
+            Transform::from_translation(Vec3::new(0.0, - (ROWS as f32 / 2.0) * UNIT + row as f32 * UNIT, -0.5)),
+        ));
+    }
+    for col in 0..=COLUMS {
+        commands.spawn((
+            Mesh2d(col_line_mesh.clone()),
+            MeshMaterial2d(grid_line_material.clone()),
+            Transform::from_translation(Vec3::new(- (COLUMS as f32 / 2.0) * UNIT + col as f32 * UNIT, 0.0, -0.5)),
+        ));
+    }
 
-    // setuup block materials
+
+    // ブロックの色とメッシュを準備
     let mut map = HashMap::new();
     map.insert(Mino::O, materials.add(Color::from(YELLOW)));
     map.insert(Mino::T, materials.add(Color::from(PURPLE)));
@@ -282,7 +309,8 @@ fn setup_board_and_resources(
     map.insert(Mino::I, materials.add(Color::from(LIGHT_BLUE)));
     block_material_map.0 = map;
 
-    mino_mesh.0 = meshes.add(Rectangle::new(UNIT * 0.9, UNIT * 0.9));
+    mino_mesh.default = meshes.add(Rectangle::new(UNIT * 0.9, UNIT * 0.9));
+    mino_mesh.preview = meshes.add(Rectangle::new(UNIT * 0.45, UNIT * 0.45));
 }
 
 fn spawn_mino(
@@ -293,6 +321,7 @@ fn spawn_mino(
     control_block: Query<&ControllingBlock>,
     board: Res<Board>,
     mut next_state: ResMut<NextState<GameState>>,
+    mut holded_mino: ResMut<HoldedMino>,
 ){
     // NEXT_BLOCKS_CAPACITYまでブロックを補充
     let all_blocks = [Mino::O, Mino::T, Mino::S, Mino::Z, Mino::L, Mino::J, Mino::I];
@@ -323,31 +352,34 @@ fn spawn_mino(
             let world_pos = grid_to_world_position(block.get_board_position());
             commands.spawn((
                 Name::new(format!("Mino {:?} - Block {}", mino, i)),
-                Mesh2d(mino_mesh.0.clone()),
+                Mesh2d(mino_mesh.default.clone()),
                 MeshMaterial2d(material.clone()),
                 Transform::from_translation(world_pos),
                 block,
             ));
         }
+        // ホールド可能にする
+        holded_mino.can_hold = true;
     }
 }
 
 fn fall_mino(
     time: Res<Time>,
-    mut game_level: ResMut<GameLevel>,
+    mut block_timer: ResMut<BlockTimer>,
     mut control_block: Query<(&mut Transform, &mut ControllingBlock)>,
     board: Res<Board>,
     keys: Res<ButtonInput<KeyCode>>,
+    mut game_score: ResMut<GameScore>,
 ){
     let can_fall = control_block.iter().all(|(_, block)| {
         let new_pos = block.peek_parrallel_move(IVec2::new(0, -1));
         board.is_position_valid(new_pos)
     });
 
-    if !can_fall && !game_level.block_landed {
-        game_level.block_has_landed();
-    }else if can_fall && game_level.block_landed {
-        game_level.block_reset();
+    if !can_fall && !block_timer.block_landed {
+        block_timer.block_has_landed();
+    }else if can_fall && block_timer.block_landed {
+        block_timer.block_reset();
     }
 
     if !can_fall {
@@ -356,11 +388,12 @@ fn fall_mino(
 
     let delta = if keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::KeyS) {
         // ソフトドロップ
-        time.delta_secs() * 10.0
+        game_score.score += 1;
+        time.delta_secs() * 20.0
     } else {
         time.delta_secs()
     };
-    if !game_level.should_fall(delta) {
+    if !block_timer.should_fall(delta) {
         return;
     }
 
@@ -374,8 +407,10 @@ fn move_mino(
     keys: Res<ButtonInput<KeyCode>>,
     mut control_block: Query<(&mut Transform, &mut ControllingBlock)>,
     board: Res<Board>,
-    mut game_level: ResMut<GameLevel>
+    mut block_timer: ResMut<BlockTimer>,
+    mut game_score: ResMut<GameScore>,
 ){
+    let mut controlled_flag = false;
     // 横移動
     let lateral_delta = if keys.just_pressed(KeyCode::ArrowRight) || keys.just_pressed(KeyCode::KeyD) {
         IVec2::new(1, 0)
@@ -389,6 +424,7 @@ fn move_mino(
         for (mut transform, mut block) in control_block.iter_mut() {
             block.parrallel_move(lateral_delta);
             transform.translation = grid_to_world_position(block.get_board_position());
+            controlled_flag = true;
         }
     }
 
@@ -397,7 +433,8 @@ fn move_mino(
         let drop_distance = control_block.iter().map(|(_, block)| 
             (0..).find(|&d| !board.is_position_valid(block.peek_parrallel_move(IVec2::new(0, -(d + 1))))).unwrap()
         ).min().unwrap();
-        game_level.hard_drop();
+        block_timer.hard_drop();
+        game_score.score += drop_distance as u32 * 5;
         for (mut transform, mut block) in control_block.iter_mut() {
             block.parrallel_move(IVec2::new(0, - (drop_distance as i32)));
             transform.translation = grid_to_world_position(block.get_board_position());
@@ -421,7 +458,7 @@ fn move_mino(
     };
     let (next_rotation, wall_kick_offsets) = if keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW) {
         (mino_rotaion.rotate_right(), wall_kick_offsets)
-    } else if keys.just_pressed(KeyCode::KeyQ) {
+    } else if keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::KeyZ) {
         (mino_rotaion.rotate_left(), wall_kick_offsets.map(|offset| IVec2::new(-offset.x, offset.y)))
     } else {
         return;
@@ -443,6 +480,121 @@ fn move_mino(
             block.rotate(next_rotation);
             block.parrallel_move(offset);
             transform.translation = grid_to_world_position(block.get_board_position());
+            controlled_flag = true;
+        }
+    }
+
+    // 凍結タイマー延長
+    if controlled_flag && block_timer.block_landed {
+        block_timer.extend_freeze_time();
+    }
+}
+
+#[derive(Resource, Default)]
+struct HoldedMino{
+    mino: Option<Mino>,
+    can_hold: bool,
+}
+
+fn hold_mino(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut holded_mino: ResMut<HoldedMino>,
+    mut control_block: Query<(Entity, &mut Transform, &mut ControllingBlock)>,
+    block_color_map: Res<MinoMaterialMap>,
+    mino_mesh: Res<MinoMesh>,
+){
+    // 一度ホールドしたら次のブロックがスポーンするまでホールドできない
+    if !holded_mino.can_hold {
+        return;
+    }
+    // ホールドキーが押されたらホールド処理
+    if !keys.just_pressed(KeyCode::KeyC) {
+        return;
+    }
+    let mino_to_hold = if let Some((_, _, block)) = control_block.iter_mut().next() {
+        block.kind
+    } else {
+        return;
+    };
+    // ホールドしているブロックと入れ替え
+    let new_mino = holded_mino.mino;
+    holded_mino.mino = Some(mino_to_hold);
+    holded_mino.can_hold = false;
+    for (entity, _, _) in control_block.iter_mut() {
+        commands.entity(entity).despawn();
+    }
+    if let Some(new) = new_mino {
+        // ホールドしているブロックをスポーン
+        let material = block_color_map.0.get(&new).unwrap().clone();
+        for i in 0..4 {
+            let block = ControllingBlock{
+                kind: new,
+                rotation: Rotation::North,
+                index_in_mino: i,
+                pivot_pos: IVec2::new(COLUMS as i32 / 2, ROWS as i32 - 1),
+            };
+            let world_pos = grid_to_world_position(block.get_board_position());
+            commands.spawn((
+                Name::new(format!("Mino {:?} - Block {}", new, i)),
+                Mesh2d(mino_mesh.default.clone()),
+                MeshMaterial2d(material.clone()),
+                Transform::from_translation(world_pos),
+                block,
+            ));
+        }
+    }
+}
+
+#[derive(Component)]
+struct PreviewMino;
+
+fn updata_preview_minos(
+    mut commands: Commands,
+    preview_mino_query: Query<Entity, With<PreviewMino>>,
+    block_color_map: Res<MinoMaterialMap>,
+    mino_mesh: Res<MinoMesh>,
+    holded_mino: Res<HoldedMino>,
+    next_blocks: Res<UpcomingMinoQueue>,
+){
+    // 既存のプレビューを削除
+    for entity in preview_mino_query.iter() {
+        commands.entity(entity).despawn();
+    }
+    // ホールドされたミノは左上に表示
+    if let Some(holded) = holded_mino.mino {
+        let material = block_color_map.0.get(&holded).unwrap().clone();
+        for &pos in holded.get_rotated_shape(&Rotation::North).iter() {
+            let world_pos = Vec3::new(
+                - (COLUMS as f32 / 2.0 + 2.0) * UNIT + pos.x as f32 * UNIT * 0.5,
+                (ROWS as f32 / 2.0 - 2.0) * UNIT + pos.y as f32 * UNIT * 0.5,
+                0.0,
+            );
+            commands.spawn((
+                Name::new(format!("Preview Holded Mino {:?} - Block", holded)),
+                Mesh2d(mino_mesh.preview.clone()),
+                MeshMaterial2d(material.clone()),
+                Transform::from_translation(world_pos),
+                PreviewMino,
+            ));
+        }
+    }
+    // 次のミノは右上に表示
+    for (i, &mino) in next_blocks.0.iter().take(NEXT_BLOCKS_CAPACITY).enumerate() {
+        let material = block_color_map.0.get(&mino).unwrap().clone();
+        for &pos in mino.get_rotated_shape(&Rotation::North).iter() {
+            let world_pos = Vec3::new(
+                (COLUMS as f32 / 2.0 + 2.0) * UNIT + pos.x as f32 * UNIT * 0.5,
+                (ROWS as f32 / 2.0 - 2.0 - i as f32 * 3.0) * UNIT + pos.y as f32 * UNIT * 0.5,
+                0.0,
+            );
+            commands.spawn((
+                Name::new(format!("Preview Next Mino {:?} - Block", mino)),
+                Mesh2d(mino_mesh.preview.clone()),
+                MeshMaterial2d(material.clone()),
+                Transform::from_translation(world_pos),
+                PreviewMino,
+            ));
         }
     }
 }
@@ -450,7 +602,7 @@ fn move_mino(
 fn freeze_block(
     mut commands: Commands,
     time: Res<Time>,
-    mut game_level: ResMut<GameLevel>,
+    mut game_level: ResMut<BlockTimer>,
     control_block: Query<(Entity, &ControllingBlock)>,
     mut board: ResMut<Board>,
     mut next_state: ResMut<NextState<GameState>>,
@@ -478,37 +630,77 @@ fn freeze_block(
 fn clear_lines(
     mut commands: Commands,
     mut board: ResMut<Board>,
-    mut game_level: ResMut<GameLevel>,
+    mut block_timer: ResMut<BlockTimer>,
+    mut game_score: ResMut<GameScore>,
     mut frozen_blocks: Query<(&mut Transform, &mut FrozenBlock)>,
 ){
-    let lines_to_erase = (0..ROWS).filter(|&y| {
-        (0..COLUMS).all(|x| board.0[y][x].is_some())
-    }).collect_vec();
-    let num_erased_lines = lines_to_erase.len() as u32;
-    if num_erased_lines == 0 {
-        return;
-    }
-    // ブロックを消す
-    for (x, &y) in iproduct!(0..COLUMS, &lines_to_erase) {
-        if let Some(entity) = board.0[y][x] {
-            commands.entity(entity).despawn();
-            board.0[y][x] = None;
-        }
-    }
-    // ブロックを落とす
-    for &y in &lines_to_erase {
-        for (x, yy) in iproduct!(0..COLUMS, (y + 1)..(ROWS + 3)) {
-            if let Some(entity) = board.0[yy][x] {
-                board.0[yy - 1][x] = Some(entity);
-                board.0[yy][x] = None;
-                if let Ok((mut transform, mut frozen_block)) = frozen_blocks.get_mut(entity) {
-                    frozen_block.pos.y -= 1;
-                    transform.translation = grid_to_world_position(frozen_block.pos);
+    let mut num_erased_lines = 0;
+    for row in 0..ROWS {
+        if board.0[row].iter().all(|cell| cell.is_some()) {
+            // 行を消す
+            for &cell in board.0[row].iter() {
+                if let Some(entity) = cell {
+                    commands.entity(entity).despawn();
                 }
+            }
+            num_erased_lines += 1;
+            // 上の行を一つ下にずらす
+            for r in row + 1..ROWS + 3 {
+                for c in 0..COLUMS {
+                    board.0[r - 1][c] = board.0[r][c];
+                    if let Some(entity) = board.0[r][c] 
+                        && let Ok((mut transform, mut block)) = frozen_blocks.get_mut(entity)
+                    {
+                        block.pos.y -= 1;
+                        transform.translation = grid_to_world_position(block.pos);
+                    }
+                }
+            }
+            // 一番上の行を空にする
+            for c in 0..COLUMS {
+                board.0[ROWS + 2][c] = None;
             }
         }
     }
-    game_level.add_erased_lines(num_erased_lines);
+    game_score.add_erased_lines(num_erased_lines);
+    if num_erased_lines > 0 {
+        block_timer.level = game_score.level;
+    }
+}
+
+#[derive(Resource)]
+struct GameScore{
+    score: u32,
+    level: u32,
+    erased_lines: u32,
+    combo_count: u32,
+}
+
+impl GameScore {
+    fn new() -> Self {
+        GameScore {
+            score: 0,
+            level: 1,
+            erased_lines: 0,
+            combo_count: 0,
+        }
+    }
+    fn add_erased_lines(&mut self, num_lines: u32) {
+        if num_lines == 0 {
+            self.combo_count = 0;
+            return;
+        }
+        self.erased_lines += num_lines;
+        self.combo_count += 1;
+        self.score += match num_lines {
+            1 => 100,
+            2 => 300,
+            3 => 500,
+            4 => 800,
+            _ => 0,
+        } * self.combo_count;
+        self.level = self.erased_lines / 10 + 1;
+    }
 }
 
 #[derive(Component)]
@@ -540,58 +732,68 @@ fn setup_score_ui(
         },
     )).with_children(|builder| {
         builder.spawn((
+            Name::new("Labels"),
             Text::new("Score\nLevel\nLines"),
             text_font.clone(),
             TextColor(WHITE.into()),
             TextLayout::new_with_justify(Justify::Left),
         ));
         builder.spawn((
+            Name::new("Separators"),
             Text::new(":\n:\n:"),
             text_font.clone(),
             TextColor(GRAY.into()),
             TextLayout::new_with_justify(Justify::Center),
         ));
         builder.spawn((
+            Name::new("Values"),
             Node {
                 flex_direction: FlexDirection::Column,
+                flex_grow: 1.0,
                 ..default()
             },
-            children![(
+        )).with_children(|parent| {
+            parent.spawn((
+                Name::new("ScoreValue"),
                 ScoreText,
-                TextSpan::new("0"),
+                Text::new("0"),
                 text_font.clone(),
                 TextColor(WHITE.into()),
                 TextLayout::new_with_justify(Justify::Left),
-            ), (
+            ));
+            parent.spawn((
+                Name::new("LevelValue"),
                 LevelText,
-                TextSpan::new("1"),
+                Text::new("1"),
                 text_font.clone(),
                 TextColor(WHITE.into()),
                 TextLayout::new_with_justify(Justify::Left),
-            ), (
+            ));
+            parent.spawn((
+                Name::new("ElasedLinesValue"),
                 ElasedLinesText,
-                TextSpan::new("0"),
+                Text::new("0"),
                 text_font.clone(),
                 TextColor(WHITE.into()),
                 TextLayout::new_with_justify(Justify::Left),
-            )]
-        ));
+            ));
+        });
     });
 }
 
 fn update_score_ui(
-    game_level: Res<GameLevel>,
-    mut score_text: Query<&mut TextSpan, (With<ScoreText>, Without<LevelText>, Without<ElasedLinesText>)>,
-    mut level_text: Query<&mut TextSpan, (With<LevelText>, Without<ScoreText>, Without<ElasedLinesText>)>,
-    mut elased_lines_text: Query<&mut TextSpan, (With<ElasedLinesText>, Without<ScoreText>, Without<LevelText>)>,
+    game_score: Res<GameScore>,
+    mut score_text: Query<&mut Text, (With<ScoreText>, Without<LevelText>, Without<ElasedLinesText>)>,
+    mut level_text: Query<&mut Text, (With<LevelText>, Without<ScoreText>, Without<ElasedLinesText>)>,
+    mut elased_lines_text: Query<&mut Text, (With<ElasedLinesText>, Without<ScoreText>, Without<LevelText>)>,
 ){
     if let Ok(mut text_span) = score_text.single_mut() {
-        *text_span = TextSpan::new(format!("{}", game_level.erased_lines * 100));
+        **text_span = format!("{}", game_score.score);
     }
     if let Ok(mut text_span) = level_text.single_mut() {
-        *text_span = TextSpan::new(format!("{}", game_level.level));
+        **text_span = format!("{}", game_score.level);
     }
     if let Ok(mut text_span) = elased_lines_text.single_mut() {
-        *text_span = TextSpan::new(format!("{}", game_level.erased_lines));
+        **text_span = format!("{}", game_score.erased_lines);
     }
 }
