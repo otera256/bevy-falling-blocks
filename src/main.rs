@@ -38,7 +38,7 @@ enum Mino{
     I
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 enum Rotation{
     North,
     East,
@@ -464,14 +464,15 @@ fn move_mino(
     // 回転
     // Super Rotation Systemでの回転軸の補正順序（右回転の場合）
     // 左回転の場合はx座標を反転させる
-    let wall_kick_offsets = [
+    let left_wall_kick_offsets = [
         IVec2::new(0, 0),
         IVec2::new(-1, 0),
         IVec2::new(-1, 1),
         IVec2::new(0, -2),
         IVec2::new(-1, -2),
     ];
-    let (mino_kind, mino_rotaion) = if let Some((_, block)) = control_block.iter().next() {
+    let right_wall_kick_offsets = left_wall_kick_offsets.map(|IVec2 { x, y }| IVec2::new(-x, y));
+    let (mino_kind, mino_rotation) = if let Some((_, block)) = control_block.iter().next() {
         (block.kind, block.rotation)
     } else {
         return;
@@ -479,26 +480,39 @@ fn move_mino(
 
     let rotate_right = keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW);
     let rotate_left = keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::KeyZ);
-    // Iミノの場合のみ別の補正順序
-    let (next_rotation, wall_kick_offsets) = match ((rotate_right, rotate_left), mino_kind) {
-        ((true, false), Mino::I) => (mino_rotaion.rotate_right(), [
+
+    if rotate_right == rotate_left {
+        return;
+    }
+    let next_rotation = if rotate_right { mino_rotation.rotate_right() } else { mino_rotation.rotate_left() };
+    
+    let mut wall_kick_offsets;
+    if mino_kind != Mino::I {
+        wall_kick_offsets = if mino_rotation == Rotation::East || next_rotation == Rotation::West {
+            right_wall_kick_offsets
+        }
+        else {
+            left_wall_kick_offsets
+        };
+    }
+    else { // Iミノの場合のみ別の補正順序
+        wall_kick_offsets = [
             IVec2::new(0,0),
             IVec2::new(-2,0),
             IVec2::new(1,0),
             IVec2::new(-2,-1),
             IVec2::new(1,2),
-        ]),
-        ((false, true), Mino::I) => (mino_rotaion.rotate_left(), [
-            IVec2::new(0,0),
-            IVec2::new(-1,0),
-            IVec2::new(2,0),
-            IVec2::new(-1,2),
-            IVec2::new(2,-1),
-        ]),
-        ((true, false), _) => (mino_rotaion.rotate_right(), wall_kick_offsets),
-        ((false, true), _) => (mino_rotaion.rotate_left(), wall_kick_offsets.map(|offset| IVec2::new(-offset.x, offset.y))),
-        _ => {return;},
-    };
+        ];
+        let mut rotation_pair = [mino_rotation, next_rotation];
+        rotation_pair.sort();
+        if matches!(rotation_pair, [Rotation::East, Rotation::South] | [Rotation::North, Rotation::West]) {
+            wall_kick_offsets.swap(1, 2);
+            wall_kick_offsets.swap(3, 4);
+        }
+        if next_rotation == Rotation::East || mino_rotation == Rotation::West {
+            wall_kick_offsets = wall_kick_offsets.map(|IVec2 { x, y }| IVec2::new(-x, y));
+        }
+    }
 
     // wall_kick_offsetsを順に試して、どれかで回転できたら回転を適用
     // できなかったら回転しない
