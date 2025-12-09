@@ -226,11 +226,7 @@ impl BlockTimer {
             return false;
         }
         self.freeze_timer -= delta;
-        if self.freeze_timer <= 0.0 {
-            true
-        } else {
-            false
-        }
+        self.freeze_timer <= 0.0
     }
     fn extend_freeze_time(&mut self) {
         if self.extended_counter >= MAX_EXTENDED_FREEZE_COUNT {
@@ -475,18 +471,35 @@ fn move_mino(
         IVec2::new(0, -2),
         IVec2::new(-1, -2),
     ];
-    let mino_rotaion = if let Some((_, block)) = control_block.iter().next() {
-        block.rotation
+    let (mino_kind, mino_rotaion) = if let Some((_, block)) = control_block.iter().next() {
+        (block.kind, block.rotation)
     } else {
         return;
     };
-    let (next_rotation, wall_kick_offsets) = if keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW) {
-        (mino_rotaion.rotate_right(), wall_kick_offsets)
-    } else if keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::KeyZ) {
-        (mino_rotaion.rotate_left(), wall_kick_offsets.map(|offset| IVec2::new(-offset.x, offset.y)))
-    } else {
-        return;
+
+    let rotate_right = keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW);
+    let rotate_left = keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::KeyZ);
+    // Iミノの場合のみ別の補正順序
+    let (next_rotation, wall_kick_offsets) = match ((rotate_right, rotate_left), mino_kind) {
+        ((true, false), Mino::I) => (mino_rotaion.rotate_right(), [
+            IVec2::new(0,0),
+            IVec2::new(-2,0),
+            IVec2::new(1,0),
+            IVec2::new(-2,-1),
+            IVec2::new(1,2),
+        ]),
+        ((false, true), Mino::I) => (mino_rotaion.rotate_left(), [
+            IVec2::new(0,0),
+            IVec2::new(-1,0),
+            IVec2::new(2,0),
+            IVec2::new(-1,2),
+            IVec2::new(2,-1),
+        ]),
+        ((true, false), _) => (mino_rotaion.rotate_right(), wall_kick_offsets),
+        ((false, true), _) => (mino_rotaion.rotate_left(), wall_kick_offsets.map(|offset| IVec2::new(-offset.x, offset.y))),
+        _ => {return;},
     };
+
     // wall_kick_offsetsを順に試して、どれかで回転できたら回転を適用
     // できなかったら回転しない
     let can_rotate = wall_kick_offsets.iter().find_map(|&offset| {
@@ -626,12 +639,12 @@ fn updata_preview_minos(
 fn freeze_block(
     mut commands: Commands,
     time: Res<Time>,
-    mut game_level: ResMut<BlockTimer>,
+    mut block_timer: ResMut<BlockTimer>,
     control_block: Query<(Entity, &ControllingBlock)>,
     mut board: ResMut<Board>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
-    if !game_level.should_freeze(time.delta_secs()) {
+    if !block_timer.should_freeze(time.delta_secs()) {
         return;
     }
     // もしブロックが一つもROW * COLUMSに収まらなかったらゲームオーバー
