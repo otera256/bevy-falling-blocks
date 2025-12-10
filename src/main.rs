@@ -462,8 +462,7 @@ fn move_mino(
     }
 
     // 回転
-    // Super Rotation Systemでの回転軸の補正順序（右回転の場合）
-    // 左回転の場合はx座標を反転させる
+    // Super Rotation Systemでの回転軸の補正順序（左にずれる場合）
     let left_wall_kick_offsets = [
         IVec2::new(0, 0),
         IVec2::new(-1, 0),
