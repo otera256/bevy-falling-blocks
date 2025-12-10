@@ -204,6 +204,7 @@ impl BlockTimer {
         self.landed_or_last_operated_time_secs = time_secs;
         self.extended_counter = 0;
         self.is_hard_dropped = false;
+        self.min_y = ROWS as u32;
     }
     fn falling_interval(&self) -> f32 {
         3.0 / (5 + self.level) as f32
@@ -377,6 +378,7 @@ fn spawn_mino(
         }
         // ホールド可能にする
         holded_mino.can_hold = true;
+        // block_timerのリセット
         block_timer.new_mino(time.elapsed_secs());
     }
 }
