@@ -449,7 +449,7 @@ fn move_mino(
     else if !keys.any_pressed([KeyCode::ArrowRight, KeyCode::KeyD, KeyCode::ArrowLeft, KeyCode::KeyA]) {
         lateral_move_timer.last_moved = None;
     }
-    let first_interval = Duration::from_millis(150);
+    let first_interval = Duration::from_millis(300);
     let next_interval = Duration::from_millis(50);
     // 横移動
     let lateral_delta = match &mut *lateral_move_timer {
