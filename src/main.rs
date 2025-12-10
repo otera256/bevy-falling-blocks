@@ -1,6 +1,7 @@
 use std::{collections::VecDeque, time::{Duration, Instant}};
 
 use bevy::{color::palettes::{basic::*, css::{DARK_BLUE, LIGHT_BLUE, ORANGE}}, platform::collections::HashMap, prelude::*};
+use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use rand::seq::IndexedRandom;
 
 const UNIT: f32 = 35.0;
@@ -246,6 +247,8 @@ struct LateralMoveTimer {
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(EguiPlugin::default())
+        .add_plugins(WorldInspectorPlugin::new())
         .insert_resource(MinoMaterialMap(HashMap::new()))
         .insert_resource(MinoMesh::default())
         .insert_resource(UpcomingMinoQueue(VecDeque::with_capacity(NEXT_BLOCKS_CAPACITY)))
