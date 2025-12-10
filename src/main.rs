@@ -138,10 +138,10 @@ impl ControllingBlock {
     fn get_board_position(&self) -> IVec2 {
         self.pivot_pos + self.kind.get_rotated_shape(&self.rotation)[self.index_in_mino]
     }
-    fn parrallel_move(&mut self, delta: IVec2) {
+    fn paralell_move(&mut self, delta: IVec2) {
         self.pivot_pos += delta;
     }
-    fn peek_parrallel_move(&self, delta: IVec2) -> IVec2 {
+    fn peek_paralell_move(&self, delta: IVec2) -> IVec2 {
         self.get_board_position() + delta
     }
     fn rotate(&mut self, rotation: Rotation) {
@@ -176,16 +176,15 @@ impl Board {
         self.0[pos.y as usize][pos.x as usize].is_none()
     }
 }
-
-const MAX_EXTENDED_FREEZE_COUNT: u32 = 10;
-
 #[derive(Resource)]
 struct BlockTimer{
     level: u32,
     fall_timer: f32,
     block_landed: bool,
-    freeze_timer: f32,
+    landed_or_last_operated_time_secs: f32,
     extended_counter: u32,
+    min_y: u32,
+    is_hard_dropped: bool
 }
 
 impl BlockTimer {
@@ -194,47 +193,57 @@ impl BlockTimer {
             level: 1,
             fall_timer: 1.0,
             block_landed: false,
-            freeze_timer: 1.0,
+            landed_or_last_operated_time_secs: 0.0,
             extended_counter: 0,
+            min_y: ROWS as u32,
+            is_hard_dropped: true
         }
+    }
+    fn new_mino(&mut self, time_secs: f32) {
+        self.block_landed = false;
+        self.landed_or_last_operated_time_secs = time_secs;
+        self.extended_counter = 0;
+        self.is_hard_dropped = false;
     }
     fn falling_interval(&self) -> f32 {
         3.0 / (5 + self.level) as f32
     }
-    fn should_fall(&mut self, delta: f32) -> bool {
+    fn try_fall(&mut self, delta: f32, min_y: u32) -> bool {
         self.fall_timer -= delta;
         if self.fall_timer <= 0.0 {
             self.fall_timer += self.falling_interval();
+            if self.min_y > min_y {
+                self.extended_counter = 0;
+                self.min_y = min_y;
+            }
             true
         } else {
             false
         }
     }
-    fn block_has_landed(&mut self) {
+    fn block_has_landed(&mut self, time_secs: f32) {
         self.block_landed = true;
-        self.freeze_timer = self.falling_interval() * 2.0;
+        self.landed_or_last_operated_time_secs = time_secs;
     }
     fn hard_drop(&mut self) {
         self.block_landed = true;
-        self.freeze_timer = 0.0;
+        self.is_hard_dropped = true;
     }
-    fn block_reset(&mut self) {
+    fn not_landed(&mut self) {
         self.block_landed = false;
-        self.extended_counter = 0;
     }
-    fn should_freeze(&mut self, delta: f32) -> bool {
+    fn should_freeze(&mut self, time_secs: f32) -> bool {
         if !self.block_landed {
             return false;
         }
-        self.freeze_timer -= delta;
-        self.freeze_timer <= 0.0
-    }
-    fn extend_freeze_time(&mut self) {
-        if self.extended_counter >= MAX_EXTENDED_FREEZE_COUNT {
-            return;
+        if self.is_hard_dropped || self.extended_counter >= 15 {
+            return true;
         }
+        self.landed_or_last_operated_time_secs + 0.5 < time_secs
+    }
+    fn extend_freeze_time(&mut self, time_secs: f32) {
         self.extended_counter += 1;
-        self.freeze_timer += self.falling_interval();
+        self.landed_or_last_operated_time_secs = time_secs;
     }
 }
 #[derive(Resource, Default)]
@@ -328,6 +337,8 @@ fn spawn_mino(
     board: Res<Board>,
     mut next_state: ResMut<NextState<GameState>>,
     mut holded_mino: ResMut<HoldedMino>,
+    mut block_timer: ResMut<BlockTimer>,
+    time: Res<Time<Virtual>>
 ){
     // NEXT_BLOCKS_CAPACITYまでブロックを補充
     let all_blocks = [Mino::O, Mino::T, Mino::S, Mino::Z, Mino::L, Mino::J, Mino::I];
@@ -366,6 +377,7 @@ fn spawn_mino(
         }
         // ホールド可能にする
         holded_mino.can_hold = true;
+        block_timer.new_mino(time.elapsed_secs());
     }
 }
 
@@ -377,15 +389,18 @@ fn fall_mino(
     keys: Res<ButtonInput<KeyCode>>,
     mut game_score: ResMut<GameScore>,
 ){
+    if control_block.is_empty() {
+        return;
+    }
     let can_fall = control_block.iter().all(|(_, block)| {
-        let new_pos = block.peek_parrallel_move(IVec2::new(0, -1));
+        let new_pos = block.peek_paralell_move(IVec2::new(0, -1));
         board.is_position_valid(new_pos)
     });
 
     if !can_fall && !block_timer.block_landed {
-        block_timer.block_has_landed();
+        block_timer.block_has_landed(time.elapsed_secs());
     }else if can_fall && block_timer.block_landed {
-        block_timer.block_reset();
+        block_timer.not_landed();
     }
 
     if !can_fall {
@@ -399,12 +414,17 @@ fn fall_mino(
     } else {
         time.delta_secs()
     };
-    if !block_timer.should_fall(delta) {
+
+    let min_y = control_block.iter().map(|(_, block)|
+        block.peek_paralell_move(IVec2::new(0, -1)).y
+    ).min().unwrap();
+
+    if !block_timer.try_fall(delta, min_y as u32) {
         return;
     }
 
     for (mut transform, mut block) in control_block.iter_mut() {
-        block.parrallel_move(IVec2::new(0, -1));
+        block.paralell_move(IVec2::new(0, -1));
         transform.translation = grid_to_world_position(block.get_board_position());
     }
 }
@@ -415,9 +435,10 @@ fn move_mino(
     board: Res<Board>,
     mut block_timer: ResMut<BlockTimer>,
     mut game_score: ResMut<GameScore>,
-    mut lateral_move_timer: ResMut<LateralMoveTimer>
+    mut lateral_move_timer: ResMut<LateralMoveTimer>,
+    time: Res<Time>
 ){
-    let mut controlled_flag = false;
+    let mut is_operated = false;
     if keys.any_just_pressed([KeyCode::ArrowRight, KeyCode::KeyD, KeyCode::ArrowLeft, KeyCode::KeyA]) {
         lateral_move_timer.move_count = 0;
         lateral_move_timer.last_moved = Some(Instant::now());
@@ -443,23 +464,27 @@ fn move_mino(
     };
 
     if lateral_delta != IVec2::new(0, 0) 
-        && control_block.iter().all(|(_, block)| board.is_position_valid(block.peek_parrallel_move(lateral_delta))) {
+        && control_block.iter().all(|(_, block)| board.is_position_valid(block.peek_paralell_move(lateral_delta))) {
         for (mut transform, mut block) in control_block.iter_mut() {
-            block.parrallel_move(lateral_delta);
+            block.paralell_move(lateral_delta);
             transform.translation = grid_to_world_position(block.get_board_position());
-            controlled_flag = true;
+            is_operated = true;
         }
     }
+    if is_operated {
+        block_timer.extend_freeze_time(time.elapsed_secs());
+    }
+    is_operated = false;
 
     // ハードドロップ
     if keys.just_pressed(KeyCode::Space) {
         let drop_distance = control_block.iter().map(|(_, block)| 
-            (0..).find(|&d| !board.is_position_valid(block.peek_parrallel_move(IVec2::new(0, -(d + 1))))).unwrap()
+            (0..).find(|&d| !board.is_position_valid(block.peek_paralell_move(IVec2::new(0, -(d + 1))))).unwrap()
         ).min().unwrap();
         block_timer.hard_drop();
         game_score.score += drop_distance as u32 * 5;
         for (mut transform, mut block) in control_block.iter_mut() {
-            block.parrallel_move(IVec2::new(0, - (drop_distance as i32)));
+            block.paralell_move(IVec2::new(0, - (drop_distance as i32)));
             transform.translation = grid_to_world_position(block.get_board_position());
         }
     }
@@ -531,15 +556,15 @@ fn move_mino(
     if let Some(offset) = can_rotate {
         for (mut transform, mut block) in control_block.iter_mut() {
             block.rotate(next_rotation);
-            block.parrallel_move(offset);
+            block.paralell_move(offset);
             transform.translation = grid_to_world_position(block.get_board_position());
-            controlled_flag = true;
+            is_operated = true;
         }
     }
 
     // 凍結タイマー延長
-    if controlled_flag && block_timer.block_landed {
-        block_timer.extend_freeze_time();
+    if is_operated {
+        block_timer.extend_freeze_time(time.elapsed_secs());   
     }
 }
 
@@ -654,13 +679,13 @@ fn updata_preview_minos(
 
 fn freeze_block(
     mut commands: Commands,
-    time: Res<Time>,
+    time: Res<Time<Virtual>>,
     mut block_timer: ResMut<BlockTimer>,
     control_block: Query<(Entity, &ControllingBlock)>,
     mut board: ResMut<Board>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
-    if !block_timer.should_freeze(time.delta_secs()) {
+    if !block_timer.should_freeze(time.elapsed_secs()) {
         return;
     }
     // もしブロックが一つもROW * COLUMSに収まらなかったらゲームオーバー
