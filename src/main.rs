@@ -491,22 +491,13 @@ fn move_mino(
         }
     }
 
-    // 回転
-    // Super Rotation Systemでの回転軸の補正順序（左にずれる場合）
-    let left_wall_kick_offsets = [
-        IVec2::new(0, 0),
-        IVec2::new(-1, 0),
-        IVec2::new(-1, 1),
-        IVec2::new(0, -2),
-        IVec2::new(-1, -2),
-    ];
-    let right_wall_kick_offsets = left_wall_kick_offsets.map(|IVec2 { x, y }| IVec2::new(-x, y));
     let (mino_kind, mino_rotation) = if let Some((_, block)) = control_block.iter().next() {
         (block.kind, block.rotation)
     } else {
         return;
     };
 
+    // 回転
     let rotate_right = keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW);
     let rotate_left = keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::KeyZ);
 
@@ -515,14 +506,26 @@ fn move_mino(
     }
     let next_rotation = if rotate_right { mino_rotation.rotate_right() } else { mino_rotation.rotate_left() };
     
+    // Super Rotation Systemでの回転軸の補正順序
     let mut wall_kick_offsets;
     if mino_kind != Mino::I {
-        wall_kick_offsets = if mino_rotation == Rotation::East || next_rotation == Rotation::West {
-            right_wall_kick_offsets
+        wall_kick_offsets = [
+            IVec2::new(0, 0),
+            IVec2::new(-1, 0),
+            IVec2::new(-1, 1),
+            IVec2::new(0, -2),
+            IVec2::new(-1, -2),
+        ];
+        if mino_rotation == Rotation::East || next_rotation == Rotation::West {
+            for offset in &mut wall_kick_offsets {
+                offset.x *= -1;
+            }
         }
-        else {
-            left_wall_kick_offsets
-        };
+        if matches!(mino_rotation, Rotation::East | Rotation::West) {
+            for offset in &mut wall_kick_offsets {
+                offset.y *= -1;
+            }
+        }
     }
     else { // Iミノの場合のみ別の補正順序
         wall_kick_offsets = [
@@ -538,8 +541,15 @@ fn move_mino(
             wall_kick_offsets.swap(1, 2);
             wall_kick_offsets.swap(3, 4);
         }
-        if next_rotation == Rotation::East || mino_rotation == Rotation::West {
-            wall_kick_offsets = wall_kick_offsets.map(|IVec2 { x, y }| IVec2::new(-x, y));
+        if mino_rotation == Rotation::East || next_rotation == Rotation::West {
+            for offset in &mut wall_kick_offsets {
+                offset.x *= -1;
+            }
+        }
+        if mino_rotation == Rotation::South || next_rotation == Rotation::North {
+            for offset in &mut wall_kick_offsets {
+                offset.y *= -1;
+            }
         }
     }
 
