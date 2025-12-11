@@ -433,6 +433,9 @@ fn move_mino(
     mut lateral_move_timer: ResMut<LateralMoveTimer>,
     time: Res<Time>
 ){
+    if control_block.is_empty() {
+        return;
+    }
     let mut is_operated = false;
     if keys.any_just_pressed([KeyCode::ArrowRight, KeyCode::KeyD, KeyCode::ArrowLeft, KeyCode::KeyA]) {
         lateral_move_timer.move_count = 0;
