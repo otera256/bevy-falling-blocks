@@ -112,13 +112,10 @@ impl Mino{
     }
 }
 
-#[derive(Resource)]
-struct MinoMaterialMap(HashMap<Mino, Handle<ColorMaterial>>);
-
 #[derive(Resource, Default)]
-struct MinoMesh{
-    default: Handle<Mesh>,
-    preview: Handle<Mesh>,
+struct MinoHandles{
+    colors:HashMap<Mino, Handle<ColorMaterial>>,
+    mesh: Handle<Mesh>,
 }
 
 const NEXT_BLOCKS_CAPACITY: usize = 5;
@@ -259,8 +256,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(EguiPlugin::default())
         .add_plugins(WorldInspectorPlugin::new())
-        .insert_resource(MinoMaterialMap(HashMap::new()))
-        .insert_resource(MinoMesh::default())
+        .insert_resource(MinoHandles::default())
         .insert_resource(UpcomingMinoQueue(VecDeque::with_capacity(NEXT_BLOCKS_CAPACITY)))
         .insert_resource(Board([[None; COLUMS]; ROWS + 3]))
         .insert_resource(BlockTimer::new())
@@ -283,8 +279,7 @@ fn setup_board_and_resources(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut block_material_map: ResMut<MinoMaterialMap>,
-    mut mino_mesh: ResMut<MinoMesh>,
+    mut mino_handles: ResMut<MinoHandles>,
 ){
     commands.spawn(Camera2d);
 
@@ -323,16 +318,14 @@ fn setup_board_and_resources(
     map.insert(Mino::L, materials.add(Color::from(ORANGE)));
     map.insert(Mino::J, materials.add(Color::from(DARK_BLUE)));
     map.insert(Mino::I, materials.add(Color::from(LIGHT_BLUE)));
-    block_material_map.0 = map;
+    mino_handles.colors = map;
 
-    mino_mesh.default = meshes.add(Rectangle::new(UNIT * 0.9, UNIT * 0.9));
-    mino_mesh.preview = meshes.add(Rectangle::new(UNIT * 0.45, UNIT * 0.45));
+    mino_handles.mesh = meshes.add(Rectangle::new(UNIT * 0.9, UNIT * 0.9));
 }
 
 fn spawn_mino(
     mut commands: Commands,
-    block_color_map: Res<MinoMaterialMap>,
-    mino_mesh: Res<MinoMesh>,
+    mino_handles: Res<MinoHandles>,
     mut next_blocks: ResMut<UpcomingMinoQueue>,
     control_block: Query<&ControllingBlock>,
     board: Res<Board>,
@@ -353,7 +346,7 @@ fn spawn_mino(
     // 次のブロックを取り出してスポーン
     if control_block.is_empty() && let Some(mino) = next_blocks.0.pop_front() {
         info!("Spawning mino: {:?}", mino);
-        let material = block_color_map.0.get(&mino).unwrap().clone();
+        let material = mino_handles.colors.get(&mino).unwrap().clone();
         // もしスポーンする位置にブロックがあったらゲームオーバー
         for i in 0..4 {
             let block = ControllingBlock{
@@ -370,7 +363,7 @@ fn spawn_mino(
             let world_pos = grid_to_world_position(block.get_board_position());
             commands.spawn((
                 Name::new(format!("Mino {:?} - Block {}", mino, i)),
-                Mesh2d(mino_mesh.default.clone()),
+                Mesh2d(mino_handles.mesh.clone()),
                 MeshMaterial2d(material.clone()),
                 Transform::from_translation(world_pos),
                 block,
@@ -581,8 +574,7 @@ fn hold_mino(
     keys: Res<ButtonInput<KeyCode>>,
     mut holded_mino: ResMut<HoldedMino>,
     mut control_block: Query<(Entity, &mut Transform, &mut ControllingBlock)>,
-    block_color_map: Res<MinoMaterialMap>,
-    mino_mesh: Res<MinoMesh>,
+    mino_handles: Res<MinoHandles>,
 ){
     // 一度ホールドしたら次のブロックがスポーンするまでホールドできない
     if !holded_mino.can_hold {
@@ -606,7 +598,7 @@ fn hold_mino(
     }
     if let Some(new) = new_mino {
         // ホールドしているブロックをスポーン
-        let material = block_color_map.0.get(&new).unwrap().clone();
+        let material = mino_handles.colors.get(&new).unwrap().clone();
         for i in 0..4 {
             let block = ControllingBlock{
                 kind: new,
@@ -617,7 +609,7 @@ fn hold_mino(
             let world_pos = grid_to_world_position(block.get_board_position());
             commands.spawn((
                 Name::new(format!("Mino {:?} - Block {}", new, i)),
-                Mesh2d(mino_mesh.default.clone()),
+                Mesh2d(mino_handles.mesh.clone()),
                 MeshMaterial2d(material.clone()),
                 Transform::from_translation(world_pos),
                 block,
@@ -629,11 +621,13 @@ fn hold_mino(
 #[derive(Component)]
 struct PreviewMino;
 
+const PREVIEW_RATIO: f32 = 0.5;
+const PREVIEW_SCALE: Vec3 = Vec3::new(PREVIEW_RATIO, PREVIEW_RATIO, 1.0);
+
 fn updata_preview_minos(
     mut commands: Commands,
     preview_mino_query: Query<Entity, With<PreviewMino>>,
-    block_color_map: Res<MinoMaterialMap>,
-    mino_mesh: Res<MinoMesh>,
+    mino_handles: Res<MinoHandles>,
     holded_mino: Res<HoldedMino>,
     next_blocks: Res<UpcomingMinoQueue>,
 ){
@@ -643,36 +637,36 @@ fn updata_preview_minos(
     }
     // ホールドされたミノは左上に表示
     if let Some(holded) = holded_mino.mino {
-        let material = block_color_map.0.get(&holded).unwrap().clone();
+        let material = mino_handles.colors.get(&holded).unwrap().clone();
         for &pos in holded.get_rotated_shape(&Rotation::North).iter() {
             let world_pos = Vec3::new(
-                - (COLUMS as f32 / 2.0 + 2.0) * UNIT + pos.x as f32 * UNIT * 0.5,
-                (ROWS as f32 / 2.0 - 2.0) * UNIT + pos.y as f32 * UNIT * 0.5,
+                - (COLUMS as f32 / 2.0 + 2.0) * UNIT + pos.x as f32 * UNIT * PREVIEW_RATIO,
+                (ROWS as f32 / 2.0 - 2.0) * UNIT + pos.y as f32 * UNIT * PREVIEW_RATIO,
                 0.0,
             );
             commands.spawn((
                 Name::new(format!("Preview Holded Mino {:?} - Block", holded)),
-                Mesh2d(mino_mesh.preview.clone()),
+                Mesh2d(mino_handles.mesh.clone()),
                 MeshMaterial2d(material.clone()),
-                Transform::from_translation(world_pos),
+                Transform::from_translation(world_pos).with_scale(PREVIEW_SCALE),
                 PreviewMino,
             ));
         }
     }
     // 次のミノは右上に表示
     for (i, &mino) in next_blocks.0.iter().take(NEXT_BLOCKS_CAPACITY).enumerate() {
-        let material = block_color_map.0.get(&mino).unwrap().clone();
+        let material = mino_handles.colors.get(&mino).unwrap().clone();
         for &pos in mino.get_rotated_shape(&Rotation::North).iter() {
             let world_pos = Vec3::new(
-                (COLUMS as f32 / 2.0 + 2.0) * UNIT + pos.x as f32 * UNIT * 0.5,
-                (ROWS as f32 / 2.0 - 2.0 - i as f32 * 3.0) * UNIT + pos.y as f32 * UNIT * 0.5,
+                (COLUMS as f32 / 2.0 + 2.0) * UNIT + pos.x as f32 * UNIT * PREVIEW_RATIO,
+                (ROWS as f32 / 2.0 - 2.0 - i as f32 * 3.0) * UNIT + pos.y as f32 * UNIT * PREVIEW_RATIO,
                 0.0,
             );
             commands.spawn((
                 Name::new(format!("Preview Next Mino {:?} - Block", mino)),
-                Mesh2d(mino_mesh.preview.clone()),
+                Mesh2d(mino_handles.mesh.clone()),
                 MeshMaterial2d(material.clone()),
-                Transform::from_translation(world_pos),
+                Transform::from_translation(world_pos).with_scale(PREVIEW_SCALE),
                 PreviewMino,
             ));
         }
